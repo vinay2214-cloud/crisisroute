@@ -1,167 +1,244 @@
 import os
+import json
+import time
 import logging
 from datetime import datetime, timezone
-from uuid import uuid4
-from typing import Optional
-from dotenv import load_dotenv
-from elasticsearch import Elasticsearch
-
-# Load environment variables
-load_dotenv()
-
-ELASTIC_ENDPOINT = os.getenv("ELASTIC_ENDPOINT")
-ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY")
-
-if ELASTIC_ENDPOINT:
-    try:
-        es = Elasticsearch(
-            ELASTIC_ENDPOINT,
-            api_key=ELASTIC_API_KEY
-        )
-    except Exception as e:
-        print(f"Error initializing Elasticsearch client in notify_agent: {e}")
-        es = None
-else:
-    print("Warning: ELASTIC_ENDPOINT not configured in notify_agent. Elasticsearch disabled.")
-    es = None
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
+from google.cloud import pubsub_v1
+from google.api_core.exceptions import GoogleAPICallError
+import google.genai as genai
+from agents.mcp_client import mcp_client
 
 logger = logging.getLogger("crisisroute.notify")
+
+# Dummy attribute for backward compatibility with unit test mock patches
+es = None
+
+# Initialize Publisher client
+# Google Cloud SDK automatically honors PUBSUB_EMULATOR_HOST if set in environment.
+publisher = None
+try:
+    publisher = pubsub_v1.PublisherClient()
+except Exception as e:
+    logger.error(f"Failed to initialize Google Cloud Pub/Sub PublisherClient: {e}")
+
+class HospitalBriefing(BaseModel):
+    emergency_summary: str = Field(..., description="Concise emergency summary of patient state")
+    recommended_preparation: str = Field(..., description="Actionable recommended preparation instructions for the receiving emergency room")
+    required_team: str = Field(..., description="Specific medical teams or specialties required to be present at arrival")
+    risk_assessment: str = Field(..., description="Critical risk assessment during transit and immediate arrival")
+
+def generate_hospital_briefing(
+    symptoms: str,
+    severity: str,
+    specialty: str,
+    eta_minutes: int
+) -> Dict[str, str]:
+    """
+    Uses Gemini 2.5 Flash to generate a clinical hospital-ready briefing.
+    """
+    fallback_briefing = {
+        "Emergency Summary": f"Patient presenting with symptoms: {symptoms}.",
+        "Recommended Preparation": f"Prepare emergency bay for {specialty.upper()} intake.",
+        "Required Team": f"Emergency department physicians and {specialty.upper()} team on standby.",
+        "Risk Assessment": "Standard transit risks apply. Monitor vitals.",
+        "emergency_summary": f"Patient presenting with symptoms: {symptoms}.",
+        "recommended_preparation": f"Prepare emergency bay for {specialty.upper()} intake.",
+        "required_team": f"Emergency department physicians and {specialty.upper()} team on standby.",
+        "risk_assessment": "Standard transit risks apply. Monitor vitals."
+    }
+
+    system_prompt = """
+You are an Emergency Medicine Dispatcher.
+Your job is to generate a concise, hospital-ready clinical briefing for the receiving emergency department.
+You will be given:
+1. Patient's symptoms.
+2. Triage severity level (critical, urgent, stable).
+3. Matched medical specialty required.
+4. Estimated Time of Arrival (ETA) in minutes.
+
+You must output a JSON object containing:
+- emergency_summary: A concise, medical-grade summary of the patient's presentation and chief complaints.
+- recommended_preparation: Actionable, step-by-step instructions of how the ER bay should prepare (e.g. set up cath lab, prepare stroke protocol, draw baseline labs).
+- required_team: The specific medical teams, specialists, nurses, or techs that must be activated and standby at the bay on arrival.
+- risk_assessment: High-level risk evaluation (e.g. airway compromise risk, cardiac arrest risk during transit, hemorrhage control priority).
+
+Keep the briefing extremely precise, professional, and clear. Every second counts.
+"""
+
+    user_prompt = f"""
+Patient Symptoms: {symptoms}
+Triage Severity: {severity.upper()}
+Required Specialty: {specialty.upper()}
+ETA: {eta_minutes} minutes
+"""
+
+    for attempt in range(3):
+        try:
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                client = genai.Client(api_key=api_key)
+            else:
+                project = os.getenv("GOOGLE_CLOUD_PROJECT") or "crisisroute-2026-498212"
+                location = os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+                client = genai.Client(vertexai=True, project=project, location=location)
+                
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.1,
+                    max_output_tokens=2000,
+                    response_mime_type="application/json",
+                    response_schema=HospitalBriefing,
+                )
+            )
+            raw = response.text.strip()
+            result = json.loads(raw, strict=False)
+            
+            # Map keys to include both formats
+            mapped_result = {
+                "Emergency Summary": result.get("emergency_summary", ""),
+                "Recommended Preparation": result.get("recommended_preparation", ""),
+                "Required Team": result.get("required_team", ""),
+                "Risk Assessment": result.get("risk_assessment", ""),
+                "emergency_summary": result.get("emergency_summary", ""),
+                "recommended_preparation": result.get("recommended_preparation", ""),
+                "required_team": result.get("required_team", ""),
+                "risk_assessment": result.get("risk_assessment", "")
+            }
+            return mapped_result
+        except Exception as e:
+            logger.warning(f"generate_hospital_briefing attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    logger.error("generate_hospital_briefing: all 3 attempts failed — returning fallback")
+    return fallback_briefing
+
+def publish_notification(
+    case_id: str,
+    hospital_id: str,
+    severity: str,
+    specialty: str,
+    eta_minutes: int,
+    timestamp: str,
+    briefing: Dict[str, str]
+) -> bool:
+    """
+    Publishes a structured notification payload to the GCP Pub/Sub topic 'hospital-alerts'.
+    Implements retry logic with exponential backoff.
+    """
+    if not publisher:
+        logger.error("Pub/Sub PublisherClient is not initialized. Cannot send notification.")
+        return False
+
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "crisisroute-2026-498212"
+    topic_id = "hospital-alerts"
+    topic_path = publisher.topic_path(project_id, topic_id)
+
+    payload = {
+        "case_id": case_id,
+        "hospital_id": hospital_id,
+        "severity": severity,
+        "specialty": specialty,
+        "eta_minutes": eta_minutes,
+        "timestamp": timestamp,
+        "briefing": briefing
+    }
+    
+    data = json.dumps(payload).encode("utf-8")
+    
+    # Retry parameters
+    max_retries = 3
+    base_delay = 1.0  # 1 second
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Publishing notification to {topic_path} (Attempt {attempt+1}/{max_retries})")
+            future = publisher.publish(topic_path, data)
+            message_id = future.result(timeout=10.0)  # Wait for result
+            logger.info(f"Published message ID: {message_id} to Pub/Sub topic {topic_id}")
+            return True
+        except (GoogleAPICallError, Exception) as e:
+            delay = base_delay * (2 ** attempt)
+            logger.error(f"Pub/Sub publish error on attempt {attempt+1}: {e}. Retrying in {delay:.1f}s...")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                
+    logger.error("Failed to publish alert to Google Cloud Pub/Sub after maximum retries.")
+    return False
 
 def create_case_record(
     symptoms: str,
     age: int,
     patient_name: str,
-    triage_result: dict,
-    specialty_result: dict,
-    selected_hospital: dict,
-    all_ranked_hospitals: list,
+    triage_result: Dict[str, Any],
+    specialty_result: Dict[str, Any],
+    selected_hospital: Dict[str, Any],
+    all_ranked_hospitals: List[Dict[str, Any]],
     patient_lat: float,
     patient_lng: float,
     pipeline_duration_ms: int
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Creates a triage case record, indexes it in Elasticsearch, formats and logs a simulated dispatch alert.
+    Creates a triage case record and indexes it via MCP, and dispatches a live Pub/Sub notification.
     """
-    case_id = f"CR-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    timestamp = datetime.now(timezone.utc).isoformat()
+    # 1. Create the case record in Elasticsearch via MCP Server
+    res = mcp_client.call_tool("create_case_record", {
+        "symptoms": symptoms,
+        "age": age,
+        "patient_name": patient_name,
+        "triage_result": triage_result,
+        "specialty_result": specialty_result,
+        "selected_hospital": selected_hospital,
+        "all_ranked_hospitals": all_ranked_hospitals,
+        "patient_lat": patient_lat,
+        "patient_lng": patient_lng,
+        "pipeline_duration_ms": pipeline_duration_ms
+    })
     
+    case_id = res.get("case_id")
+    hospital_id = selected_hospital.get("hospital_id")
     severity = triage_result.get("severity", "critical")
-    chief_complaint = triage_result.get("chief_complaint", "Unknown Emergency")
     specialty = specialty_result.get("specialty", "general")
     eta_minutes = selected_hospital.get("eta_minutes", 0)
+    timestamp = res.get("timestamp") or datetime.now(timezone.utc).isoformat()
     
-    notification_message = f"""
-═══════ CRISISROUTE ALERT ═══════
-CASE ID: {case_id}
-TIME: {datetime.now().strftime('%H:%M:%S')} IST
-SEVERITY: {severity.upper()}
-
-PATIENT ARRIVING IN {eta_minutes} MINUTES
-Chief complaint: {chief_complaint}
-Required specialty: {specialty.upper()} TEAM
-
-Immediate action: Prepare {specialty} team in emergency bay
-Contact patient family: {selected_hospital.get('contact_phone', '108')}
-════════════════════════════════
-""".strip()
-
-    # Print notification message (simulates push to hospital)
-    print(notification_message)
-    
-    doc = {
-        "case_id": case_id,
-        "session_id": str(uuid4()),
-        "symptoms_raw": symptoms,
-        "patient_age": age,
-        "patient_name": patient_name,
-        "triage_severity": severity,
-        "chief_complaint": chief_complaint,
-        "specialty_matched": specialty,
-        "specialty_confidence": specialty_result.get("confidence", 0.0),
-        "hospital_selected_id": selected_hospital.get("hospital_id"),
-        "hospital_selected_name": selected_hospital.get("name"),
-        "hospitals_considered": len(all_ranked_hospitals),
-        "eta_minutes": eta_minutes,
-        "distance_km": selected_hospital.get("distance_km", 0.0),
-        "hospital_notified": True,
-        "patient_location": {"lat": patient_lat, "lon": patient_lng},
-        "pipeline_duration_ms": pipeline_duration_ms,
-        "timestamp": timestamp,
-        "outcome_status": "dispatched"
-    }
-
-    logged = False
-    if es:
-        try:
-            es.index(index="triage_cases", id=case_id, document=doc)
-            logged = True
-            logger.info(f"Logged case {case_id} for hospital {selected_hospital.get('name')}")
-        except Exception as e:
-            logger.error(f"Error logging case to Elasticsearch: {e}")
-            
-    return {
-        "case_id": case_id,
-        "logged": logged,
-        "hospital_notified": True,
-        "notification_message": notification_message,
-        "timestamp": timestamp
-    }
-
-def get_case(case_id: str) -> Optional[dict]:
-    """
-    Retrieves a case record from Elasticsearch by its case_id using a term query.
-    """
-    if not es:
-        return None
-        
-    try:
-        query = {"term": {"case_id": case_id}}
-        res = es.search(index="triage_cases", query=query, size=1)
-        hits = res.get("hits", {}).get("hits", [])
-        if hits:
-            return hits[0]["_source"]
-    except Exception as e:
-        logger.error(f"Error in get_case for ID {case_id}: {e}")
-        
-    return None
-
-def get_recent_cases(limit: int = 20) -> list:
-    """
-    Retrieves recent cases from Elasticsearch sorted by timestamp descending.
-    """
-    if not es:
-        return []
-        
-    try:
-        sort_config = [{"timestamp": {"order": "desc"}}]
-        res = es.search(index="triage_cases", query={"match_all": {}}, sort=sort_config, size=limit)
-        hits = res.get("hits", {}).get("hits", [])
-        return [hit["_source"] for hit in hits]
-    except Exception as e:
-        logger.error(f"Error in get_recent_cases: {e}")
-        return []
-
-if __name__ == "__main__":
-    result = create_case_record(
-        symptoms="severe chest pain left arm",
-        age=55, patient_name="Test Patient",
-        triage_result={"severity": "critical", "chief_complaint": "Acute MI suspected",
-                       "immediate_action": "Call 108 immediately"},
-        specialty_result={"specialty": "cardiology", "confidence": 0.95},
-        selected_hospital={"hospital_id": "AP-KRS-001", "name": "GGH Vijayawada",
-                           "eta_minutes": 12, "distance_km": 6.5,
-                           "contact_phone": "+91-866-2577990"},
-        all_ranked_hospitals=[],
-        patient_lat=16.5062, patient_lng=80.6480,
-        pipeline_duration_ms=2341
+    # 2. Generate Hospital-ready briefing via Gemini 2.5 Flash
+    briefing = generate_hospital_briefing(
+        symptoms=symptoms,
+        severity=severity,
+        specialty=specialty,
+        eta_minutes=eta_minutes
     )
-    print(f"\nCase created: {result['case_id']}")
     
-    fetched = get_case(result['case_id'])
-    if fetched:
-        print(f"Fetched case successfully: {fetched['chief_complaint']}")
-    else:
-        print("Failed to fetch case.")
-        
-    recents = get_recent_cases(5)
-    print(f"Recent cases count: {len(recents)}")
+    # 3. Dispatch real Pub/Sub notification to topic containing the briefing
+    notified = publish_notification(
+        case_id=case_id,
+        hospital_id=hospital_id,
+        severity=severity,
+        specialty=specialty,
+        eta_minutes=eta_minutes,
+        timestamp=timestamp,
+        briefing=briefing
+    )
+    
+    # Update returned dictionary to reflect actual Pub/Sub status and briefing contents
+    res["hospital_notified"] = notified
+    res["briefing"] = briefing
+    return res
+
+def get_case(case_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves a case record via MCP.
+    """
+    return mcp_client.call_tool("get_case", {"case_id": case_id})
+
+def get_recent_cases(limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    Retrieves recent cases via MCP.
+    """
+    return mcp_client.call_tool("get_recent_cases", {"limit": limit})

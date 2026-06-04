@@ -3,11 +3,18 @@ import math
 import json
 import urllib.request
 import urllib.parse
-from typing import Optional
+import time
+import logging
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import google.genai as genai
 
 # Load environment variables
 load_dotenv()
+
+logger = logging.getLogger("crisisroute.routing")
+
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 DEBUG_ROUTING = os.getenv("DEBUG_ROUTING", "false").lower() == "true"
@@ -229,6 +236,11 @@ def rank_hospitals(
             "accreditation": h.get("accreditation"),
             "rating": h.get("rating", 0.0),
             "composite_score": round(composite_score, 3),
+            "hospital_tier": h.get("hospital_tier"),
+            "has_cardiology": h.get("has_cardiology", False),
+            "has_trauma": h.get("has_trauma", False),
+            "has_neurology": h.get("has_neurology", False),
+            "has_oncology": h.get("has_oncology", False),
             "score_breakdown": {
                 "raw_eta_minutes": eta_minutes,
                 "raw_distance_km": round(dist_km, 1),
@@ -257,6 +269,110 @@ def rank_hospitals(
         
     return scored_hospitals[:5]
 
+class RoutingExplanation(BaseModel):
+    selected_hospital: str = Field(..., description="Name of the selected hospital (ranked #1)")
+    routing_explanation: str = Field(..., description="Detailed clinical routing justification of why this hospital was selected, including risk factors considered")
+    rejected_options: List[str] = Field(..., description="Explanations of why the nearby alternative hospitals (ranks #2, #3, etc.) were rejected for selection")
+    confidence_score: float = Field(..., description="Confidence score between 0.0 and 1.0 representing the quality of the match")
+
+def generate_routing_explanation(
+    ranked_hospitals: List[Dict[str, Any]],
+    severity: str,
+    specialty: str
+) -> Dict[str, Any]:
+    """
+    Generates a clinical explanation of why the top hospital was selected and why alternatives were rejected.
+    Uses Gemini 2.5 Flash.
+    """
+    if not ranked_hospitals:
+        return {
+            "selected_hospital": "None",
+            "routing_explanation": "No candidate hospitals available for explanation.",
+            "rejected_options": [],
+            "confidence_score": 0.0
+        }
+
+    fallback_explanation = {
+        "selected_hospital": ranked_hospitals[0]["name"],
+        "routing_explanation": "Selected based on optimal composite score combining ETA, distance, and specialty care capabilities.",
+        "rejected_options": [f"{h.get('name')} was rejected due to lower priority ranking." for h in ranked_hospitals[1:]],
+        "confidence_score": 0.80
+    }
+
+    # Format candidates list for Gemini context
+    candidates_context = []
+    for h in ranked_hospitals:
+        sb = h.get("score_breakdown", {})
+        candidates_context.append({
+            "rank": h.get("rank"),
+            "name": h.get("name"),
+            "eta_minutes": h.get("eta_minutes"),
+            "distance_km": h.get("distance_km"),
+            "beds_available": h.get("beds_available"),
+            "icu_available": h.get("icu_available"),
+            "hospital_tier": h.get("hospital_tier"),
+            "is_government": h.get("is_government"),
+            "specialties": h.get("specialties"),
+            "score_breakdown": sb
+        })
+
+    system_prompt = """
+You are the Clinical Lead of the CrisisRoute Emergency Routing Engine.
+Your job is to generate a clinical explainability layer for the hospital routing decision.
+You will be given:
+1. Patient's triage severity and clinical specialty required.
+2. A list of candidate hospitals that were ranked. The list is sorted from rank 1 (top choice, selected) down to lower ranks (rejected options).
+3. The capacity metrics and special properties for each hospital.
+
+You must explain:
+1. Why the selected hospital (rank #1) is the optimal choice based on its score breakdown, ETA, capacity, and capabilities.
+2. Why nearby alternative hospitals (ranks 2+) were rejected in favor of the first option (e.g. slower ETA, lack of intensive care units, or different tier).
+3. The clinical risk factors considered (e.g. golden hour timelines for critical cardiac/stroke patients, capacity saturation risk).
+4. The overall clinical routing justification.
+
+Maintain medical precision, clarity, and conciseness. Your explanation will be displayed directly to the dispatch team and the hospital emergency bay.
+"""
+
+    user_prompt = f"""
+Patient Severity: {severity.upper()}
+Required Specialty: {specialty.upper()}
+
+Ranked Candidates:
+{json.dumps(candidates_context, indent=2)}
+"""
+
+    for attempt in range(3):
+        try:
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                client = genai.Client(api_key=api_key)
+            else:
+                project = os.getenv("GOOGLE_CLOUD_PROJECT") or "crisisroute-2026-498212"
+                location = os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+                client = genai.Client(vertexai=True, project=project, location=location)
+                
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.1,
+                    max_output_tokens=2000,
+                    response_mime_type="application/json",
+                    response_schema=RoutingExplanation,
+                )
+            )
+            raw = response.text.strip()
+            result = json.loads(raw, strict=False)
+            return result
+        except Exception as e:
+            logger.warning(f"generate_routing_explanation attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    logger.error("generate_routing_explanation: all 3 attempts failed — returning fallback")
+    return fallback_explanation
+
 if __name__ == "__main__":
     mock_hospitals = [
         {"hospital_id": "AP-KRS-001", "name": "GGH Vijayawada", 
@@ -277,3 +393,7 @@ if __name__ == "__main__":
     ranked = rank_hospitals(mock_hospitals, mock_capacity, 16.5062, 80.6480, "critical", "cardiology")
     for h in ranked:
         print(f"Rank {h['rank']}: {h['name']} | {h['distance_km']}km | ETA {h['eta_minutes']}min | Score {h['composite_score']}")
+    
+    explanation = generate_routing_explanation(ranked, "critical", "cardiology")
+    print(f"\nAI Explanation: {json.dumps(explanation, indent=2)}")
+

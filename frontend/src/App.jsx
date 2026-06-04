@@ -401,6 +401,41 @@ function App() {
             🚨 <b>{(finalResult?.specialty_needed || "unknown").toUpperCase()} TEAM ALERTED</b> (Confidence: {((finalResult?.specialty_confidence || 0) * 100).toFixed(0)}%)
           </div>
 
+          {/* GEMINI ROUTING EXPLANATION */}
+          {finalResult?.routing_explanation && (
+            <div style={{
+              backgroundColor: "rgba(192, 132, 252, 0.15)",
+              border: "1px solid #c084fc",
+              padding: "16px",
+              borderRadius: "12px",
+              marginBottom: "16px",
+              textAlign: "left",
+              boxSizing: "border-box"
+            }}>
+              <h3 style={{margin: "0 0 8px 0", color: "#c084fc", fontSize: "14px", display: "flex", alignItems: "center", gap: "6px"}}>
+                ✨ AI Clinical Routing Justification
+              </h3>
+              <p style={{fontSize: "12px", margin: "0 0 10px 0", lineHeight: "1.5", color: "#cbd5e1"}}>
+                {finalResult.routing_explanation}
+              </p>
+              {finalResult.rejected_options && finalResult.rejected_options.length > 0 && (
+                <div style={{marginTop: "8px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "8px"}}>
+                  <strong style={{fontSize: "11px", color: "#94a3b8"}}>Alternatives Evaluated:</strong>
+                  <ul style={{margin: "4px 0 0 0", paddingLeft: "16px", fontSize: "11px", color: "#cbd5e1"}}>
+                    {finalResult.rejected_options.map((opt, i) => (
+                      <li key={i} style={{marginBottom: "2px"}}>{opt}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div style={{display: "flex", justifyContent: "space-between", marginTop: "10px", fontSize: "10px", color: "#94a3b8", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "6px"}}>
+                <span>Decision confidence: <b>{((finalResult?.confidence_score || 0.85) * 100).toFixed(0)}%</b></span>
+                <span>Selected Choice: <b>{finalResult?.selected_hospital || "Top Choice"}</b></span>
+              </div>
+            </div>
+          )}
+
+
           {/* HOSPITAL CARDS */}
           <div style={inlineStyles.hospitalsList}>
             {(finalResult?.top_hospitals || []).map((h, idx) => {

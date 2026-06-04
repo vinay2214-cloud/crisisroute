@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.triage_agent import triage_severity
 from agents.specialty_match_agent import match_specialty, search_hospitals_by_specialty
 from agents.capacity_agent import check_capacity, reserve_bed
-from agents.routing_agent import rank_hospitals
+from agents.routing_agent import rank_hospitals, generate_routing_explanation
 from agents.notify_agent import create_case_record
 
 AGENT_NAMES = {
@@ -55,6 +55,11 @@ def run_crisisroute(
     hospitals = []
     capacity = {}
     ranked = []
+    selected_hospital = "None"
+    routing_explanation = ""
+    rejected_options = []
+    confidence_score = 0.8
+
 
     # STEP 1: TriageAgent
     yield {
@@ -205,6 +210,25 @@ def run_crisisroute(
                 triage_result["severity"], specialty_result["specialty"]
             )
             top = ranked[0] if ranked else None
+            
+            # Call Gemini explainability
+            try:
+                expl = generate_routing_explanation(
+                    ranked_hospitals=ranked,
+                    severity=triage_result["severity"],
+                    specialty=specialty_result["specialty"]
+                )
+                selected_hospital = expl.get("selected_hospital", top["name"] if top else "None")
+                routing_explanation = expl.get("routing_explanation", "")
+                rejected_options = expl.get("rejected_options", [])
+                confidence_score = expl.get("confidence_score", 0.8)
+            except Exception as expl_err:
+                logging.error(f"Failed to generate routing explanation: {expl_err}")
+                selected_hospital = top["name"] if top else "None"
+                routing_explanation = "Selected based on optimal composite score combining ETA, distance, and specialty care capabilities."
+                rejected_options = [f"{h.get('name')} rejected due to lower priority ranking." for h in ranked[1:]]
+                confidence_score = 0.80
+
             yield {
                 "step": 5, 
                 "agent": "RoutingAgent", 
@@ -213,7 +237,9 @@ def run_crisisroute(
                     "top_hospital": top["name"] if top else "None",
                     "eta_minutes": top["eta_minutes"] if top else 0,
                     "distance_km": top["distance_km"] if top else 0,
-                    "hospitals_ranked": len(ranked)
+                    "hospitals_ranked": len(ranked),
+                    "routing_explanation": routing_explanation,
+                    "confidence_score": confidence_score
                 }, 
                 "elapsed_ms": elapsed()
             }
@@ -321,7 +347,10 @@ def run_crisisroute(
             "specialty_needed": specialty_result["specialty"],
             "specialty_confidence": specialty_result["confidence"],
             "top_hospitals": ranked[:3] if ranked else [],
-            "selected_hospital": ranked[0] if ranked else None,
+            "selected_hospital": selected_hospital,
+            "routing_explanation": routing_explanation,
+            "rejected_options": rejected_options,
+            "confidence_score": confidence_score,
             "eta_minutes": ranked[0]["eta_minutes"] if ranked else 0,
             "distance_km": ranked[0]["distance_km"] if ranked else 0,
             "hospital_notified": notify_result.get("hospital_notified", False),

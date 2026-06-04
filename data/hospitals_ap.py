@@ -66,33 +66,67 @@ def generate_hospitals():
                 name_template = GOVT_NAMES[0] if i == 1 else random.choice(GOVT_NAMES[1:])
                 name = name_template.replace("{City}", city_name).replace("{Area}", city_name)
                 accreditation = "Govt"
-                
-                # Size
-                if "General" in name:
-                    beds_total = random.randint(300, 600)
-                    spec_count = random.randint(6, 8)
-                else:
-                    beds_total = random.randint(100, 300)
-                    spec_count = random.randint(4, 6)
             else:
                 name_template = private_pool.pop() if private_pool else "Private Hospital {City}"
                 name = name_template.replace("{City}", city_name)
                 accreditation = random.choice(["NABH", "JCI"])
+            
+            # Determine hospital tier
+            if any(x in name for x in ["Apollo", "KIMS", "Care", "Narayana", "Manipal", "Medicover", "NRI Medical College", "Government General Hospital"]):
+                hospital_tier = "tier1"
+            elif any(x in name for x in ["Area Hospital", "District Hospital"]):
+                hospital_tier = "tier2"
+            elif any(x in name for x in ["Community Health Centre"]):
+                hospital_tier = "tier3"
+            else:
+                hospital_tier = "tier2"  # other private names default to tier2
                 
-                # Determine multispecialty or small based on name and randomness
-                is_multi = any(x in name for x in ["Apollo", "KIMS", "Care", "Narayana", "Manipal", "Medicover", "College"])
-                if is_multi or random.random() > 0.5:
-                    beds_total = random.randint(100, 400)
-                    spec_count = random.randint(4, 6)
-                else:
-                    beds_total = random.randint(50, 100)
-                    spec_count = random.randint(2, 3)
+            # Capability, beds, and ICU setup per tier
+            if hospital_tier == "tier1":
+                beds_total = random.randint(200, 600)
+                icu_total = random.randint(15, 60)
+                ventilators_total = random.randint(5, 25)
+                
+                selected_specialties = ["general", "trauma", "cardiology", "neurology", "oncology"]
+                remaining_specs = [s for s in SPECIALTIES_LIST if s not in selected_specialties]
+                spec_count = random.randint(6, 10)
+                needed = max(0, spec_count - len(selected_specialties))
+                if needed > 0:
+                    selected_specialties.extend(random.sample(remaining_specs, needed))
+                    
+            elif hospital_tier == "tier2":
+                beds_total = random.randint(100, 300)
+                icu_total = random.randint(5, 20)
+                ventilators_total = random.randint(2, 10)
+                
+                selected_specialties = ["general", "trauma"]
+                if random.random() > 0.5:
+                    selected_specialties.append("cardiology")
+                if random.random() > 0.5:
+                    selected_specialties.append("neurology")
+                    
+                remaining_specs = [s for s in SPECIALTIES_LIST if s not in selected_specialties and s != "oncology"]
+                spec_count = random.randint(4, 6)
+                needed = max(0, spec_count - len(selected_specialties))
+                if needed > 0:
+                    selected_specialties.extend(random.sample(remaining_specs, needed))
+                    
+            else:  # tier3 - Community Health Centre
+                beds_total = random.randint(20, 80)
+                icu_total = random.randint(0, 5)
+                ventilators_total = random.randint(0, 2)
+                
+                selected_specialties = ["general", "trauma"]
+                remaining_specs = [s for s in SPECIALTIES_LIST if s not in selected_specialties and s not in ["cardiology", "oncology", "neurology"]]
+                spec_count = random.randint(2, 3)
+                needed = max(0, spec_count - len(selected_specialties))
+                if needed > 0:
+                    selected_specialties.extend(random.sample(remaining_specs, needed))
 
             # Capacity constraints
             beds_available = int(beds_total * random.uniform(0.20, 0.50))
-            icu_total = int(beds_total * 0.08)
             icu_available = random.randint(0, icu_total)
-            ventilators_available = random.randint(0, 5)
+            ventilators_available = random.randint(0, ventilators_total)
             
             if beds_available > 10:
                 capacity_status = "available"
@@ -105,15 +139,11 @@ def generate_hospitals():
             lat = data["lat"] + random.uniform(-0.08, 0.08)
             lon = data["lon"] + random.uniform(-0.08, 0.08)
             
-            # Select specialties
-            # Always include general & trauma for big hospitals
-            selected_specialties = []
-            if beds_total > 150:
-                selected_specialties.extend(["general", "trauma", "cardiology"])
-            
-            remaining_specs = [s for s in SPECIALTIES_LIST if s not in selected_specialties]
-            needed = max(1, spec_count - len(selected_specialties))
-            selected_specialties.extend(random.sample(remaining_specs, needed))
+            # Derive boolean capability metadata from specialties list
+            has_cardiology = "cardiology" in selected_specialties
+            has_trauma = "trauma" in selected_specialties
+            has_neurology = "neurology" in selected_specialties
+            has_oncology = "oncology" in selected_specialties
             
             phone = f"+91-{data['phone_prefix']}-{random.randint(2000000, 9999999)}"
             rating = round(random.uniform(3.2, 4.8), 1)
@@ -136,6 +166,11 @@ def generate_hospitals():
                 "accreditation": accreditation,
                 "rating": rating,
                 "capacity_status": capacity_status,
+                "hospital_tier": hospital_tier,
+                "has_cardiology": has_cardiology,
+                "has_trauma": has_trauma,
+                "has_neurology": has_neurology,
+                "has_oncology": has_oncology,
                 "last_updated": "2026-06-03T00:00:00Z",
                 "version": 1
             }

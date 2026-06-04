@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "elasticsearch-mcp": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "env": {
+        "ELASTIC_ENDPOINT": "your-elasticsearch-endpoint-url",
+        "ELASTIC_API_KEY": "your-elasticsearch-api-key"
+      }
+    }
+  }
+}

@@ -156,14 +156,15 @@ def rank_hospitals(
         
         # Government bonus
         is_govt = h.get("is_government", False)
-        gov_bonus = 0.05 if is_govt else 0.0
+        gov_bonus = 0.0
+
         
         # Severity-adjusted weights:
         if sev == "critical":
             weights = {
-                "eta": 0.20,
-                "distance": 0.20,
-                "capacity": 0.20,
+                "eta": 0.40,
+                "distance": 0.05,
+                "capacity": 0.15,
                 "icu": 0.25,
                 "specialty": 0.15
             }

@@ -5,6 +5,20 @@ REGION="asia-south1"
 SERVICE="crisisroute-backend"
 IMAGE="gcr.io/${PROJECT_ID}/${SERVICE}"
 
+# Load environment variables from .env if present
+if [ -f .env ]; then
+  echo "🔑 Loading environment variables from .env..."
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ ! "$line" =~ ^# ]] && [[ ! -z "$line" ]]; then
+      export "$line"
+    fi
+  done < .env
+fi
+
+if [ -z "${GEMINI_API_KEY}" ]; then
+  GEMINI_API_KEY="${GOOGLE_API_KEY}"
+fi
+
 echo "🚀 Deploying CrisisRoute backend..."
 
 gcloud run deploy ${SERVICE} \

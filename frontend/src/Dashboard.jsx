@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_URL =
+  "https://crisisroute-backend-1091867759974.asia-south1.run.app";
 
 function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -144,7 +145,7 @@ function Dashboard() {
           <div style={styles.alertsList}>
             {liveAlerts.length > 0 ? (
               liveAlerts.map((c, idx) => {
-                const isCritical = c.triage_severity === "critical";
+                const isCritical = c?.triage_severity === "critical";
                 return (
                   <div key={idx} style={{
                     ...styles.alertItem,
@@ -154,17 +155,17 @@ function Dashboard() {
                     <div style={styles.alertHeader}>
                       <span style={{
                         ...styles.alertSeverity,
-                        color: isCritical ? "#E74C3C" : c.triage_severity === "urgent" ? "#F39C12" : "#27AE60"
-                      }}>{c.triage_severity.toUpperCase()}</span>
+                        color: isCritical ? "#E74C3C" : c?.triage_severity === "urgent" ? "#F39C12" : "#27AE60"
+                      }}>{(c?.triage_severity || "unknown").toUpperCase()}</span>
                       <span style={styles.alertTime}>
-                        {new Date(c.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        {new Date(c?.timestamp || "").toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </span>
                     </div>
                     <div style={styles.alertBody}>
-                      <strong>{c.patient_name} ({c.patient_age} yo)</strong>
-                      <p style={styles.alertComplaint}>{c.chief_complaint}</p>
+                      <strong>{c?.patient_name || "Patient"} ({c?.patient_age || 0} yo)</strong>
+                      <p style={styles.alertComplaint}>{c?.chief_complaint || "Unknown Complaint"}</p>
                       <div style={styles.alertDestination}>
-                        🏥 Routed to <b>{c.hospital_selected_name}</b> (ETA: {c.eta_minutes}m)
+                        🏥 Routed to <b>{c?.hospital_selected_name || "Hospital"}</b> (ETA: {c?.eta_minutes || 0}m)
                       </div>
                     </div>
                   </div>
@@ -197,13 +198,13 @@ function Dashboard() {
             </thead>
             <tbody>
               {cases.map((c, idx) => {
-                const sevColor = c.triage_severity === "critical" ? "#E74C3C" : c.triage_severity === "urgent" ? "#F39C12" : "#27AE60";
+                const sevColor = c?.triage_severity === "critical" ? "#E74C3C" : c?.triage_severity === "urgent" ? "#F39C12" : "#27AE60";
                 return (
                   <tr key={idx} style={styles.trBody}>
                     <td style={styles.td}>
-                      {new Date(c.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(c?.timestamp || "").toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </td>
-                    <td style={styles.td}><b>{c.case_id}</b></td>
+                    <td style={styles.td}><b>{c?.case_id || "CR-UNKNOWN"}</b></td>
                     <td style={styles.td}>
                       <span style={{
                         ...styles.tableSeverityBadge,
@@ -211,20 +212,20 @@ function Dashboard() {
                         borderColor: sevColor,
                         backgroundColor: `${sevColor}22`
                       }}>
-                        {c.triage_severity.toUpperCase()}
+                        {(c?.triage_severity || "unknown").toUpperCase()}
                       </span>
                     </td>
-                    <td style={styles.td}>{c.chief_complaint}</td>
-                    <td style={styles.td}>{c.specialty_matched.toUpperCase()}</td>
-                    <td style={styles.td}>{c.hospital_selected_name}</td>
-                    <td style={styles.td} className="font-data">{c.eta_minutes} min</td>
+                    <td style={styles.td}>{c?.chief_complaint || ""}</td>
+                    <td style={styles.td}>{(c?.specialty_matched || "unknown").toUpperCase()}</td>
+                    <td style={styles.td}>{c?.hospital_selected_name || "Hospital"}</td>
+                    <td style={styles.td} className="font-data">{c?.eta_minutes || 0} min</td>
                     <td style={styles.td}>
                       <span style={{
                         ...styles.statusBadge,
-                        backgroundColor: c.outcome_status === "dispatched" ? "rgba(124, 58, 237, 0.2)" : "rgba(16, 185, 129, 0.2)",
-                        color: c.outcome_status === "dispatched" ? "#c084fc" : "#10b981"
+                        backgroundColor: c?.outcome_status === "dispatched" ? "rgba(124, 58, 237, 0.2)" : "rgba(16, 185, 129, 0.2)",
+                        color: c?.outcome_status === "dispatched" ? "#c084fc" : "#10b981"
                       }}>
-                        {c.outcome_status || "dispatched"}
+                        {c?.outcome_status || "dispatched"}
                       </span>
                     </td>
                   </tr>

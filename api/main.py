@@ -29,7 +29,14 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from dotenv import load_dotenv
+    load_dotenv()
+    endpoint = os.getenv("ELASTIC_ENDPOINT")
+    api_key_exists = bool(os.getenv("ELASTIC_API_KEY"))
     logger.info("CrisisRoute API starting")
+    logger.info(f"Resolved Elasticsearch Endpoint: {endpoint or 'None'}")
+    logger.info(f"Elasticsearch API Key configured: {api_key_exists}")
+    logger.info("Dashboard Query target indices: hospitals, triage_cases")
     yield
     logger.info("CrisisRoute API shutting down")
 
@@ -171,7 +178,16 @@ async def dashboard_stats():
         stats = get_system_stats()
         return stats
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting dashboard stats: {e}")
+        return {
+            "total_hospitals": 0,
+            "total_beds": 0,
+            "available_beds": 0,
+            "available_icu": 0,
+            "occupancy_rate": 1.0,
+            "status_breakdown": {"available": 0, "limited": 0, "full": 0},
+            "by_district": []
+        }
 
 @app.get("/api/dashboard/cases")
 async def recent_cases(limit: int = 20):
@@ -181,7 +197,8 @@ async def recent_cases(limit: int = 20):
         cases = get_recent_cases(limit=limit)
         return {"cases": cases, "total": len(cases)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting recent cases: {e}")
+        return {"cases": [], "total": 0}
 
 @app.get("/api/case/{case_id}")
 async def get_case_status(case_id: str):
@@ -204,7 +221,10 @@ async def submit_feedback(feedback: FeedbackRequest):
         from elasticsearch import Elasticsearch
         from dotenv import load_dotenv
         load_dotenv()
-        es = Elasticsearch(os.getenv("ELASTIC_ENDPOINT"), api_key=os.getenv("ELASTIC_API_KEY"))
+        endpoint = os.getenv("ELASTIC_ENDPOINT")
+        if not endpoint:
+            return {"success": False, "error": "Elasticsearch endpoint not configured"}
+        es = Elasticsearch(endpoint, api_key=os.getenv("ELASTIC_API_KEY"))
         es.update(
             index="triage_cases",
             id=feedback.case_id,
@@ -212,4 +232,5 @@ async def submit_feedback(feedback: FeedbackRequest):
         )
         return {"success": True, "case_id": feedback.case_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in submit_feedback: {e}")
+        return {"success": False, "error": str(e)}

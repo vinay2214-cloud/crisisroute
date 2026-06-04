@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+DEBUG_ROUTING = os.getenv("DEBUG_ROUTING", "false").lower() == "true"
+
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
@@ -80,9 +82,12 @@ def rank_hospitals(
     """
     scored_hospitals = []
     
-    # Calculate distance for all first to establish max_dist
+    # Calculate distance and ETA for all first to establish max_dist and max_eta
     candidate_dists = []
+    candidate_etas = []
     filtered_candidates = []
+    
+    sev = severity.lower()
     
     for h in hospitals:
         hid = h.get("hospital_id")
@@ -90,25 +95,44 @@ def rank_hospitals(
         cap_status = cap.get("capacity_status", h.get("capacity_status", "full"))
         
         # Step 1: Filter
-        if cap_status == "full" and severity.lower() != "critical":
+        if cap_status == "full" and sev != "critical":
             continue
             
         h_lat = h.get("lat") or h.get("location", {}).get("lat") or 0.0
         h_lng = h.get("lng") or h.get("location", {}).get("lon") or 0.0
         dist = haversine(patient_lat, patient_lng, h_lat, h_lng)
         
+        # Calculate ETA
+        eta_minutes = get_google_maps_eta(patient_lat, patient_lng, h_lat, h_lng)
+        if eta_minutes is None:
+            if sev == "critical":
+                eta_minutes = max(1, int(dist / 0.7))  # 42 km/h
+            elif sev == "urgent":
+                eta_minutes = max(1, int(dist / 0.5))  # 30 km/h
+            else:
+                eta_minutes = max(1, int(dist / 0.4))  # 24 km/h
+        
         candidate_dists.append(dist)
-        filtered_candidates.append((h, cap, dist, h_lat, h_lng, cap_status))
+        candidate_etas.append(eta_minutes)
+        filtered_candidates.append((h, cap, dist, h_lat, h_lng, cap_status, eta_minutes))
         
     if not filtered_candidates:
         return []
         
     max_dist = max(candidate_dists) if candidate_dists else 1.0
+    max_eta = max(candidate_etas) if candidate_etas else 1.0
+    min_eta = min(candidate_etas) if candidate_etas else 1.0
 
     # Step 2: Score each hospital
-    for h, cap, dist_km, h_lat, h_lng, cap_status in filtered_candidates:
+    for h, cap, dist_km, h_lat, h_lng, cap_status, eta_minutes in filtered_candidates:
         # Distance score (closer = higher score)
         dist_score = 1.0 - (dist_km / max_dist) if max_dist > 0 else 1.0
+        
+        # ETA score (closer = higher score) using bounded normalization
+        if max_eta == min_eta:
+            eta_score = 1.0
+        else:
+            eta_score = 1.0 - ((eta_minutes - min_eta) / (max_eta - min_eta))
         
         # Capacity score
         beds_avail = cap.get("beds_available", h.get("beds_available", 0))
@@ -123,7 +147,7 @@ def rank_hospitals(
             
         # ICU score
         icu_avail = cap.get("icu_available", h.get("icu_available", 0))
-        icu_score = min(icu_avail / 4, 1.0)
+        icu_score = math.log1p(icu_avail) / math.log1p(50)
         
         # Specialty match score
         h_specs = h.get("specialties", [])
@@ -135,15 +159,33 @@ def rank_hospitals(
         gov_bonus = 0.05 if is_govt else 0.0
         
         # Severity-adjusted weights:
-        sev = severity.lower()
         if sev == "critical":
-            weights = {"distance": 0.35, "capacity": 0.20, "icu": 0.25, "specialty": 0.20}
+            weights = {
+                "eta": 0.20,
+                "distance": 0.20,
+                "capacity": 0.20,
+                "icu": 0.25,
+                "specialty": 0.15
+            }
         elif sev == "urgent":
-            weights = {"distance": 0.40, "capacity": 0.25, "icu": 0.10, "specialty": 0.25}
+            weights = {
+                "eta": 0.15,
+                "distance": 0.25,
+                "capacity": 0.25,
+                "icu": 0.10,
+                "specialty": 0.25
+            }
         else:  # stable
-            weights = {"distance": 0.50, "capacity": 0.30, "icu": 0.05, "specialty": 0.15}
+            weights = {
+                "eta": 0.10,
+                "distance": 0.40,
+                "capacity": 0.30,
+                "icu": 0.05,
+                "specialty": 0.15
+            }
             
         composite_score = (
+            eta_score * weights["eta"] +
             dist_score * weights["distance"] +
             capacity_score * weights["capacity"] +
             icu_score * weights["icu"] +
@@ -155,15 +197,18 @@ def rank_hospitals(
         if cap_status == "full":
             composite_score -= 0.20
 
-        # Step 3: Calculate ETA
-        eta_minutes = get_google_maps_eta(patient_lat, patient_lng, h_lat, h_lng)
-        if eta_minutes is None:
-            if sev == "critical":
-                eta_minutes = max(1, int(dist_km / 0.7))  # 42 km/h
-            elif sev == "urgent":
-                eta_minutes = max(1, int(dist_km / 0.5))  # 30 km/h
-            else:
-                eta_minutes = max(1, int(dist_km / 0.4))  # 24 km/h
+        hospital_name = h.get("name")
+
+        if DEBUG_ROUTING:
+            print(
+                f"{hospital_name} | "
+                f"ETA={eta_score:.3f} "
+                f"DIST={dist_score:.3f} "
+                f"CAP={capacity_score:.3f} "
+                f"ICU={icu_score:.3f} "
+                f"SPEC={specialty_score:.3f} "
+                f"FINAL={composite_score:.3f}"
+            )
 
         scored_hospitals.append({
             "hospital_id": h.get("hospital_id"),
@@ -183,6 +228,19 @@ def rank_hospitals(
             "accreditation": h.get("accreditation"),
             "rating": h.get("rating", 0.0),
             "composite_score": round(composite_score, 3),
+            "score_breakdown": {
+                "raw_eta_minutes": eta_minutes,
+                "raw_distance_km": round(dist_km, 1),
+                "beds_available": beds_avail,
+                "icu_available": icu_avail,
+                "eta_score": round(eta_score, 3),
+                "distance_score": round(dist_score, 3),
+                "capacity_score": round(capacity_score, 3),
+                "icu_score": round(icu_score, 3),
+                "specialty_score": round(specialty_score, 3),
+                "government_bonus": gov_bonus,
+                "final_score": round(composite_score, 3)
+            },
             "contact_phone": h.get("contact_phone"),
             "emergency_phone": "108",
             "maps_directions_url": f"https://www.google.com/maps/dir/?api=1&destination={h_lat},{h_lng}&travelmode=driving",

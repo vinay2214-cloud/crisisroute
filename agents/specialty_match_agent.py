@@ -9,10 +9,18 @@ load_dotenv()
 ELASTIC_ENDPOINT = os.getenv("ELASTIC_ENDPOINT")
 ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY")
 
-es = Elasticsearch(
-    ELASTIC_ENDPOINT,
-    api_key=ELASTIC_API_KEY
-)
+if ELASTIC_ENDPOINT:
+    try:
+        es = Elasticsearch(
+            ELASTIC_ENDPOINT,
+            api_key=ELASTIC_API_KEY
+        )
+    except Exception as e:
+        print(f"Error initializing Elasticsearch client in specialty_match_agent: {e}")
+        es = None
+else:
+    print("Warning: ELASTIC_ENDPOINT not configured in specialty_match_agent. Elasticsearch disabled.")
+    es = None
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """

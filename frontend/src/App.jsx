@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import Dashboard from './Dashboard';
 import './App.css';
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_URL =
+  "https://crisisroute-backend-1091867759974.asia-south1.run.app";
 
 // Bilingual translations
 const TRANSLATIONS = {
@@ -356,15 +357,15 @@ function App() {
                     {s && <span style={inlineStyles.durationBadge} className="font-data">{s.elapsed_ms}ms</span>}
                   </div>
 
-                  {s && (
+                  {s && s.status === "complete" && s.data && (
                     <div style={inlineStyles.stepData} className="font-mono">
-                      {step.num === 1 && `Severity: ${s.data.severity.toUpperCase()} | ${s.data.chief_complaint}`}
-                      {step.num === 2 && `Specialty: ${s.data.specialty.toUpperCase()} (${(s.data.confidence * 100).toFixed(0)}%)`}
-                      {step.num === 3 && `Hospitals Found: ${s.data.hospitals_found} (${s.data.nearest})`}
-                      {step.num === 4 && `Avail Beds Checked: ${s.data.total_available_beds}`}
-                      {step.num === 5 && `Optimal ETA: ${s.data.eta_minutes} mins`}
-                      {step.num === 6 && `Pre-registration Bed Confirmed: ${s.data.bed_reserved ? "YES" : "NO"}`}
-                      {step.num === 7 && `Dispatched Out: ${s.data.case_id}`}
+                      {step.num === 1 && `Severity: ${(s.data?.severity || "unknown").toUpperCase()} | ${s.data?.chief_complaint || ""}`}
+                      {step.num === 2 && `Specialty: ${(s.data?.specialty || "unknown").toUpperCase()} (${((s.data?.confidence || 0) * 100).toFixed(0)}%)`}
+                      {step.num === 3 && `Hospitals Found: ${s.data?.hospitals_found || 0} (${s.data?.nearest || "None"})`}
+                      {step.num === 4 && `Avail Beds Checked: ${s.data?.total_available_beds || 0}`}
+                      {step.num === 5 && `Optimal ETA: ${s.data?.eta_minutes || 0} mins`}
+                      {step.num === 6 && `Pre-registration Bed Confirmed: ${s.data?.bed_reserved ? "YES" : "NO"}`}
+                      {step.num === 7 && `Dispatched Out: ${s.data?.case_id || ""}`}
                     </div>
                   )}
                 </div>
@@ -380,34 +381,34 @@ function App() {
           {/* SEVERITY BANNER */}
           <div style={{
             ...inlineStyles.severityBanner,
-            backgroundColor: finalResult.severity === "critical" ? "#E74C3C" : finalResult.severity === "urgent" ? "#F39C12" : "#27AE60"
+            backgroundColor: finalResult?.severity === "critical" ? "#E74C3C" : finalResult?.severity === "urgent" ? "#F39C12" : "#27AE60"
           }}>
-            <span style={inlineStyles.severityLabel}>{finalResult.severity.toUpperCase()}</span>
-            <h2 style={{margin: "4px 0 0 0", fontSize: "20px"}}>{finalResult.chief_complaint}</h2>
+            <span style={inlineStyles.severityLabel}>{(finalResult?.severity || "unknown").toUpperCase()}</span>
+            <h2 style={{margin: "4px 0 0 0", fontSize: "20px"}}>{finalResult?.chief_complaint || "Unknown Complaint"}</h2>
           </div>
 
           {/* IMMEDIATE ACTION */}
           <div style={{
             ...inlineStyles.immediateActionBox,
-            borderColor: finalResult.severity === "critical" ? "#E74C3C" : finalResult.severity === "urgent" ? "#F39C12" : "#27AE60"
+            borderColor: finalResult?.severity === "critical" ? "#E74C3C" : finalResult?.severity === "urgent" ? "#F39C12" : "#27AE60"
           }}>
             <span style={inlineStyles.actionLabel}>{t.immediateAction}</span>
-            <p style={inlineStyles.actionText}>{finalResult.immediate_action}</p>
+            <p style={inlineStyles.actionText}>{finalResult?.immediate_action || "Seek medical attention immediately."}</p>
           </div>
 
           {/* SPECIALTY BADGE */}
           <div style={inlineStyles.specialtyAlert}>
-            🚨 <b>{finalResult.specialty_needed.toUpperCase()} TEAM ALERTED</b> (Confidence: {(finalResult.specialty_confidence * 100).toFixed(0)}%)
+            🚨 <b>{(finalResult?.specialty_needed || "unknown").toUpperCase()} TEAM ALERTED</b> (Confidence: {((finalResult?.specialty_confidence || 0) * 100).toFixed(0)}%)
           </div>
 
           {/* HOSPITAL CARDS */}
           <div style={inlineStyles.hospitalsList}>
-            {finalResult.top_hospitals.map((h, idx) => {
+            {(finalResult?.top_hospitals || []).map((h, idx) => {
               // Color variables for ranks
               const rankColor = idx === 0 ? "#FFD700" : idx === 1 ? "#C0C0C0" : "#CD7F32";
               
               // Bed availability logic
-              const barColor = h.beds_available >= 20 ? "#27AE60" : h.beds_available >= 5 ? "#F39C12" : "#E74C3C";
+              const barColor = (h?.beds_available || 0) >= 20 ? "#27AE60" : (h?.beds_available || 0) >= 5 ? "#F39C12" : "#E74C3C";
 
               return (
                 <div key={idx} style={inlineStyles.hospitalCard}>
@@ -418,36 +419,36 @@ function App() {
                   <div style={inlineStyles.hCardHeader}>
                     <div style={{...inlineStyles.rankBadge, backgroundColor: rankColor}}>#{idx + 1}</div>
                     <div style={{flex: 1, textAlign: "left"}}>
-                      <h3 style={inlineStyles.hName}>{h.name}</h3>
-                      <div style={inlineStyles.hMeta}>{h.district} · AP</div>
+                      <h3 style={inlineStyles.hName}>{h?.name || "Hospital"}</h3>
+                      <div style={inlineStyles.hMeta}>{h?.district || "Unknown District"} · AP</div>
                     </div>
                   </div>
 
                   <div style={inlineStyles.hDetailsRow} className="font-data">
-                    <span>🚗 <b>{h.distance_km} km</b></span>
-                    <span>⏱️ <b>{h.eta_minutes} mins away</b></span>
+                    <span>🚗 <b>{(h?.distance_km || 0).toFixed(1)} km</b></span>
+                    <span>⏱️ <b>{h?.eta_minutes || 0} mins away</b></span>
                   </div>
 
                   {/* Bed availability bar */}
                   <div style={inlineStyles.bedBarContainer}>
-                    <div style={{...inlineStyles.bedBarFill, width: `${Math.min(100, h.beds_available)}%`, backgroundColor: barColor}}></div>
+                    <div style={{...inlineStyles.bedBarFill, width: `${Math.min(100, h?.beds_available || 0)}%`, backgroundColor: barColor}}></div>
                   </div>
                   <div style={{display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#94a3b8", marginTop: "4px"}}>
-                    <span>Available beds: <b>{h.beds_available}</b></span>
-                    <span>{t.icuAvailable}<b>{h.icu_available}</b></span>
+                    <span>Available beds: <b>{h?.beds_available || 0}</b></span>
+                    <span>{t.icuAvailable}<b>{h?.icu_available || 0}</b></span>
                   </div>
 
                   <div style={inlineStyles.hMetaBadges}>
-                    <span style={inlineStyles.badge}>{h.is_government ? "Government" : "Private"}</span>
-                    <span style={inlineStyles.badge}>{h.accreditation}</span>
-                    <span style={inlineStyles.badge}>⭐ {h.rating}</span>
+                    <span style={inlineStyles.badge}>{h?.is_government ? "Government" : "Private"}</span>
+                    <span style={inlineStyles.badge}>{h?.accreditation || "General"}</span>
+                    <span style={inlineStyles.badge}>⭐ {h?.rating || "0.0"}</span>
                   </div>
 
                   <div style={inlineStyles.actionsRow}>
-                    <a href={h.maps_directions_url} target="_blank" rel="noreferrer" style={inlineStyles.actionBtn}>
+                    <a href={h?.maps_directions_url || "#"} target="_blank" rel="noreferrer" style={inlineStyles.actionBtn}>
                       {t.directions}
                     </a>
-                    <a href={`tel:${h.contact_phone}`} style={{...inlineStyles.actionBtn, backgroundColor: "#E74C3C"}}>
+                    <a href={h?.contact_phone ? `tel:${h.contact_phone}` : "#"} style={{...inlineStyles.actionBtn, backgroundColor: "#E74C3C"}}>
                       {t.callHospital}
                     </a>
                   </div>
@@ -458,8 +459,8 @@ function App() {
 
           {/* Case audit info */}
           <div style={inlineStyles.caseInfo}>
-            <span>Case ID: <b>{finalResult.case_id}</b></span> | 
-            <span> {t.analyzedIn} <b>{(finalResult.pipeline_duration_ms / 1000).toFixed(1)}s</b></span>
+            <span>Case ID: <b>{finalResult?.case_id || "CR-UNKNOWN"}</b></span> | 
+            <span> {t.analyzedIn} <b>{((finalResult?.pipeline_duration_ms || 0) / 1000).toFixed(1)}s</b></span>
           </div>
 
           {/* Search New Link */}

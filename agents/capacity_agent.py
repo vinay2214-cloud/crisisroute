@@ -8,10 +8,18 @@ load_dotenv()
 ELASTIC_ENDPOINT = os.getenv("ELASTIC_ENDPOINT")
 ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY")
 
-es = Elasticsearch(
-    ELASTIC_ENDPOINT,
-    api_key=ELASTIC_API_KEY
-)
+if ELASTIC_ENDPOINT:
+    try:
+        es = Elasticsearch(
+            ELASTIC_ENDPOINT,
+            api_key=ELASTIC_API_KEY
+        )
+    except Exception as e:
+        print(f"Error initializing Elasticsearch client in capacity_agent: {e}")
+        es = None
+else:
+    print("Warning: ELASTIC_ENDPOINT not configured in capacity_agent. Elasticsearch disabled.")
+    es = None
 
 def check_capacity(hospital_ids: list) -> dict:
     """

@@ -15,10 +15,6 @@ if [ -f .env ]; then
   done < .env
 fi
 
-if [ -z "${GEMINI_API_KEY}" ]; then
-  GEMINI_API_KEY="${GOOGLE_API_KEY}"
-fi
-
 echo "🚀 Deploying CrisisRoute backend..."
 
 gcloud run deploy ${SERVICE} \
@@ -32,7 +28,7 @@ gcloud run deploy ${SERVICE} \
   --min-instances 0 \
   --max-instances 3 \
   --timeout 300 \
-  --set-env-vars "GEMINI_API_KEY=${GEMINI_API_KEY},ELASTIC_ENDPOINT=${ELASTIC_ENDPOINT},ELASTIC_API_KEY=${ELASTIC_API_KEY},GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},APP_ENV=production" \
+  --set-env-vars "ELASTIC_ENDPOINT=${ELASTIC_ENDPOINT},ELASTIC_API_KEY=${ELASTIC_API_KEY},GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=asia-south1,APP_ENV=production" \
   --project ${PROJECT_ID}
 
 echo "✅ Deployed. URL above."

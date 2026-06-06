@@ -458,3 +458,41 @@ def test_routing_explanation():
         assert "Area Hospital was rejected" in res["rejected_options"][0]
         assert res["confidence_score"] == 0.95
 
+def test_regression_diagnostics_and_confidence():
+    # Test A: "severe chest pain radiating to left arm" -> cardiology
+    res_a = match_specialty(["severe", "chest", "pain", "radiating", "to", "left", "arm"], "critical")
+    assert res_a["specialty"] == "cardiology"
+    
+    # Test B: "sudden slurred speech and facial drooping" -> neurology
+    res_b = match_specialty(["sudden", "slurred", "speech", "and", "facial", "drooping"], "critical")
+    assert res_b["specialty"] == "neurology"
+    
+    # Test C: "pregnant female active labor" -> gynecology
+    res_c = match_specialty(["pregnant", "female", "active", "labor"], "critical")
+    assert res_c["specialty"] == "gynecology"
+    
+    # Test D: "2 year old child fever 104F" -> pediatrics
+    res_d = match_specialty(["2", "year", "old", "child", "fever", "104F"], "urgent")
+    assert res_d["specialty"] == "pediatrics"
+
+def test_regression_gemini_failure_and_low_confidence():
+    # Test E: Simulate Gemini failure.
+    # Expected: fallback activated, specialty NOT gynecology, specialty = general, confidence below threshold
+    with patch('agents.specialty_match_agent.mcp_client.call_tool') as mock_call:
+        mock_call.return_value = {
+            "specialty": "gynecology",
+            "confidence": 0.17,
+            "alternative_specialty": "general",
+            "search_method": "elasticsearch",
+            "matched_symptom": "emergency"
+        }
+        
+        fallback_keywords = ["emergency", "triage", "assessment", "required", "critical"]
+        res_e = match_specialty(fallback_keywords, "critical")
+        
+        assert res_e["specialty"] == "general"
+        assert res_e["search_method"] == "low_confidence_fallback"
+        assert res_e["confidence"] < 0.40
+        assert res_e["specialty"] != "gynecology"
+
+

@@ -29,7 +29,8 @@ DIRECT_MAP = {
 }
 
 # Minimum confidence threshold — if ES returns below this, fall back to general
-MIN_CONFIDENCE_THRESHOLD = 0.25
+MIN_CONFIDENCE_THRESHOLD = 0.40
+
 
 def match_specialty(symptom_keywords: List[str], severity: str) -> Dict[str, Any]:
     """
@@ -73,14 +74,28 @@ def match_specialty(symptom_keywords: List[str], severity: str) -> Dict[str, Any
         # Confidence threshold gate: if ES returned a low-confidence match,
         # fall back to general to avoid misrouting (e.g. gynecology for cardiac)
         if result and result.get("confidence", 0) < MIN_CONFIDENCE_THRESHOLD:
+            import logging
+            logger = logging.getLogger("crisisroute.specialty")
+            logger.warning(
+                f"Rejected low-confidence specialty '{result.get('specialty')}' "
+                f"with score/confidence: {result.get('confidence', 0):.3f}"
+            )
             return {
                 "specialty": "general",
                 "confidence": result.get("confidence", 0),
                 "alternative_specialty": result.get("alternative_specialty", "general"),
-                "search_method": "confidence_below_threshold",
+                "search_method": "low_confidence_fallback",
                 "matched_symptom": result.get("matched_symptom", "")
             }
 
+
+        import logging
+        logger = logging.getLogger("crisisroute.specialty")
+        logger.info(
+            f"Specialty match resolved: specialty='{result.get('specialty')}', "
+            f"confidence={result.get('confidence', 0):.3f}, "
+            f"method='{result.get('search_method')}'"
+        )
         return result
     except Exception as e:
         print(f"[SpecialtyMatchAgent ERROR] MCP call failed: {e}")

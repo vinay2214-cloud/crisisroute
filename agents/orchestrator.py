@@ -105,6 +105,11 @@ def run_crisisroute(
     }
     try:
         specialty_result = match_specialty(triage_result["keywords"], triage_result["severity"])
+        logging.info(
+            f"SpecialtyMatchAgent: Selected specialty: '{specialty_result['specialty']}' | "
+            f"Confidence: {specialty_result['confidence']:.3f} | "
+            f"Method: {specialty_result['search_method']}"
+        )
         yield {
             "step": 2, 
             "agent": "SpecialtyMatchAgent", 
@@ -229,6 +234,12 @@ def run_crisisroute(
                 rejected_options = [f"{h.get('name')} rejected due to lower priority ranking." for h in ranked[1:]]
                 confidence_score = 0.80
 
+            logging.info(
+                f"RoutingAgent: Selected hospital: '{top['name'] if top else 'None'}' | "
+                f"ETA: {top['eta_minutes'] if top else 0} min | "
+                f"Distance: {top['distance_km'] if top else 0} km | "
+                f"Composite Score: {top['composite_score'] if top else 0:.3f}"
+            )
             yield {
                 "step": 5, 
                 "agent": "RoutingAgent", 

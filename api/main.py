@@ -36,6 +36,26 @@ async def lifespan(app: FastAPI):
     logger.info("CrisisRoute API starting")
     logger.info(f"Resolved Elasticsearch Endpoint: {endpoint or 'None'}")
     logger.info(f"Elasticsearch API Key configured: {api_key_exists}")
+    
+    # Startup Environment Checks
+    gcp_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+    gcp_location = os.getenv("GOOGLE_CLOUD_LOCATION")
+    gemini_key_exists = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    
+    adc_detected = False
+    adc_error = None
+    try:
+        import google.auth
+        credentials, project_id = google.auth.default()
+        adc_detected = True
+    except Exception as e:
+        adc_error = str(e)
+        
+    logger.info(f"GOOGLE_CLOUD_PROJECT: {gcp_project or 'None'}")
+    logger.info(f"GOOGLE_CLOUD_LOCATION: {gcp_location or 'None'}")
+    logger.info(f"GEMINI_API_KEY exists: {gemini_key_exists}")
+    logger.info(f"ADC credentials detected: {adc_detected}" + (f" (Error: {adc_error})" if not adc_detected else ""))
+    
     logger.info("Dashboard Query target indices: hospitals, triage_cases")
     yield
     logger.info("CrisisRoute API shutting down")
@@ -115,16 +135,8 @@ async def health():
         services["elasticsearch"] = f"error: {str(e)[:50]}"
     # Test Gemini
     try:
-        import google.genai as genai
-        from dotenv import load_dotenv
-        load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if api_key:
-            client = genai.Client(api_key=api_key)
-        else:
-            project = os.getenv("GOOGLE_CLOUD_PROJECT") or "crisisroute-2026-498212"
-            location = os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
-            client = genai.Client(vertexai=True, project=project, location=location)
+        from agents.vertex_client import get_vertex_client
+        client = get_vertex_client()
         services["gemini"] = "ok"
     except Exception as e:
         services["gemini"] = f"error: {str(e)[:50]}"
@@ -134,6 +146,49 @@ async def health():
         content={"status": "healthy" if all_ok else "degraded", "services": services},
         status_code=200 if all_ok else 207
     )
+
+@app.get("/debug/gemini")
+async def debug_gemini():
+    """Diagnostic endpoint to perform a single Gemini call and return details."""
+    try:
+        from agents.vertex_client import get_vertex_client
+        import time
+        
+        start_time = time.time()
+        client = get_vertex_client()
+            
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents="Say hello"
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+        
+        # Log details
+        logger.info(
+            f"Gemini Debug Call: SUCCESS | Model: gemini-2.5-flash | "
+            f"Auth Mode: vertex_ai | Duration: {duration_ms}ms"
+        )
+        
+        return {
+            "success": True,
+            "model": "gemini-2.5-flash",
+            "response": response.text.strip(),
+            "auth_mode": "vertex_ai"
+        }
+    except Exception as e:
+        logger.error(
+            f"Gemini Debug Call: FAILURE | Model: gemini-2.5-flash | "
+            f"Error Type: {type(e).__name__} | Error Message: {str(e)}"
+        )
+        return JSONResponse(
+            content={
+                "success": False,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "auth_mode": "vertex_ai"
+            },
+            status_code=500
+        )
 
 @app.post("/api/triage")
 @limiter.limit("20/minute")

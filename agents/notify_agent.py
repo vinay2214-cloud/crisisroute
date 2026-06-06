@@ -83,16 +83,11 @@ Required Specialty: {specialty.upper()}
 ETA: {eta_minutes} minutes
 """
 
+    from agents.vertex_client import get_vertex_client
     for attempt in range(3):
+        start_time = time.time()
         try:
-            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-            if api_key:
-                client = genai.Client(api_key=api_key)
-            else:
-                project = os.getenv("GOOGLE_CLOUD_PROJECT") or "crisisroute-2026-498212"
-                location = os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
-                client = genai.Client(vertexai=True, project=project, location=location)
-                
+            client = get_vertex_client()
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=user_prompt,
@@ -104,6 +99,7 @@ ETA: {eta_minutes} minutes
                     response_schema=HospitalBriefing,
                 )
             )
+            duration_ms = int((time.time() - start_time) * 1000)
             raw = response.text.strip()
             cleaned = clean_json_response(raw)
             result = json.loads(cleaned, strict=False)
@@ -119,14 +115,29 @@ ETA: {eta_minutes} minutes
                 "required_team": result.get("required_team", ""),
                 "risk_assessment": result.get("risk_assessment", "")
             }
+            gemini_key_exists = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            logger.info(
+                f"Gemini API Hospital Briefing Call: SUCCESS | Model: gemini-2.5-flash | "
+                f"auth_mode: vertex_ai | duration_ms: {duration_ms}ms | "
+                f"gemini_key_exists: {gemini_key_exists}"
+            )
             return mapped_result
         except Exception as e:
-            logger.warning(f"generate_hospital_briefing attempt {attempt+1} failed: {e}")
+            duration_ms = int((time.time() - start_time) * 1000)
+            gemini_key_exists = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            logger.error(
+                f"Gemini API Hospital Briefing Call: FAILURE | Model: gemini-2.5-flash | "
+                f"auth_mode: vertex_ai | duration_ms: {duration_ms}ms | "
+                f"gemini_key_exists: {gemini_key_exists} | "
+                f"exception_type: {type(e).__name__} | exception_message: {str(e)} | "
+                f"Attempt {attempt+1}/3 failed"
+            )
             if attempt < 2:
                 time.sleep(2 ** attempt)
 
     logger.error("generate_hospital_briefing: all 3 attempts failed — returning fallback")
     return fallback_briefing
+
 
 def publish_notification(
     case_id: str,

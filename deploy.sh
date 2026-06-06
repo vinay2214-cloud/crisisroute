@@ -32,7 +32,7 @@ gcloud run deploy ${SERVICE} \
   --min-instances 0 \
   --max-instances 3 \
   --timeout 300 \
-  --set-env-vars "GEMINI_API_KEY=${GEMINI_API_KEY},ELASTIC_ENDPOINT=${ELASTIC_ENDPOINT},ELASTIC_API_KEY=${ELASTIC_API_KEY},APP_ENV=production" \
+  --set-env-vars "GEMINI_API_KEY=${GEMINI_API_KEY},ELASTIC_ENDPOINT=${ELASTIC_ENDPOINT},ELASTIC_API_KEY=${ELASTIC_API_KEY},GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},APP_ENV=production" \
   --project ${PROJECT_ID}
 
 echo "✅ Deployed. URL above."

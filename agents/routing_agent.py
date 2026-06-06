@@ -13,6 +13,15 @@ import google.genai as genai
 # Load environment variables
 load_dotenv()
 
+def clean_json_response(text: str) -> str:
+    """Strip markdown code fences from Gemini JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines).strip()
+    return text
+
 logger = logging.getLogger("crisisroute.routing")
 
 
@@ -363,7 +372,8 @@ Ranked Candidates:
                 )
             )
             raw = response.text.strip()
-            result = json.loads(raw, strict=False)
+            cleaned = clean_json_response(raw)
+            result = json.loads(cleaned, strict=False)
             return result
         except Exception as e:
             logger.warning(f"generate_routing_explanation attempt {attempt+1} failed: {e}")

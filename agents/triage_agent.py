@@ -30,6 +30,8 @@ Examples: Fracture, moderate pain, altered mental status, asthma (moderate).
 
 stable: Low urgency. Can wait. Non-threatening.
 Examples: Minor cuts, mild fever, cold, routine complaints.
+
+Return ONLY a raw JSON object. No markdown. No backticks. No explanation before or after. Start your response with { and end with }. Nothing else.
 """.strip()
 
 USER_PROMPT_TEMPLATE = """
@@ -47,6 +49,18 @@ FALLBACK_RESPONSE = {
     "differential_diagnoses": [],
     "red_flags": ["system error — auto-escalated to critical"]
 }
+
+def clean_json_response(text: str) -> str:
+    """
+    Strip markdown code fences (```json ... ```) that Gemini sometimes wraps
+    around JSON responses, even when response_mime_type is set to application/json.
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines).strip()
+    return text
 
 def triage_severity(symptoms: str, age: int) -> dict:
     """
@@ -74,9 +88,12 @@ def triage_severity(symptoms: str, age: int) -> dict:
                 )
             )
             raw = response.text.strip()
+            cleaned = clean_json_response(raw)
             try:
-                result = json.loads(raw, strict=False)
+                result = json.loads(cleaned, strict=False)
             except Exception as parse_err:
+                print(f"[TriageAgent ERROR] {type(parse_err).__name__}: {parse_err}")
+                print(f"[TriageAgent] Raw response was: {raw}")
                 logging.error(f"JSON parsing failed for raw: {raw}")
                 raise parse_err
             # Ensure severity is lowercase and valid
@@ -87,6 +104,7 @@ def triage_severity(symptoms: str, age: int) -> dict:
                 result["severity"] = sev
             return result
         except Exception as e:
+            print(f"[TriageAgent ERROR] {type(e).__name__}: {e}")
             logging.warning(f"TriageAgent attempt {attempt+1} failed: {e}")
             if attempt < 2:
                 time.sleep(2 ** attempt)

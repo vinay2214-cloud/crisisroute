@@ -12,6 +12,15 @@ from agents.mcp_client import mcp_client
 
 logger = logging.getLogger("crisisroute.notify")
 
+def clean_json_response(text: str) -> str:
+    """Strip markdown code fences from Gemini JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines).strip()
+    return text
+
 # Dummy attribute for backward compatibility with unit test mock patches
 es = None
 
@@ -96,7 +105,8 @@ ETA: {eta_minutes} minutes
                 )
             )
             raw = response.text.strip()
-            result = json.loads(raw, strict=False)
+            cleaned = clean_json_response(raw)
+            result = json.loads(cleaned, strict=False)
             
             # Map keys to include both formats
             mapped_result = {

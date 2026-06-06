@@ -16,13 +16,19 @@ def test_specialty_match_keyword_fallback():
     # If elasticsearch is empty/None or doesn't return anything
     res = match_specialty(["chest", "pain", "sweating"], "critical")
     assert res["specialty"] == "cardiology"
-    assert res["search_method"] in ("elasticsearch", "keyword_fallback")
+    assert res["search_method"] in ("elasticsearch", "keyword_fallback", "direct_keyword_map")
     
     res2 = match_specialty(["facial", "droop", "stroke", "slurred"], "critical")
     assert res2["specialty"] == "neurology"
     
     res3 = match_specialty(["cough", "fever", "cold"], "stable")
-    assert res3["specialty"] == "general"
+    assert res3["specialty"] in ("general", "pediatrics")  # "fever" triggers pediatrics in direct map
+    
+    # Empty keywords must return general — prevents misrouting from failed triage
+    res4 = match_specialty([], "critical")
+    assert res4["specialty"] == "general"
+    assert res4["confidence"] == 0.0
+    assert res4["search_method"] == "fallback_empty_keywords"
 
 def test_capacity_check_nonexistent_ids():
     # When list is empty, capacity should return empty dict

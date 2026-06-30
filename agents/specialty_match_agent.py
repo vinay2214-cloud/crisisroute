@@ -117,12 +117,13 @@ def search_hospitals_by_specialty(
     """
     Search hospitals using the Elastic MCP Server tool, filtering by specialty and geo_distance.
     """
-    return mcp_client.call_tool("search_hospitals", {
+    res = mcp_client.call_tool("search_hospitals", {
         "specialty": specialty,
         "patient_lat": patient_lat,
         "patient_lng": patient_lng,
         "radius_km": radius_km
     })
+    return res if res is not None else []
 
 if __name__ == "__main__":
     test_cases = [

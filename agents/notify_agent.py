@@ -221,6 +221,15 @@ def create_case_record(
         "pipeline_duration_ms": pipeline_duration_ms
     })
     
+    if res is None:
+        import uuid
+        res = {
+            "case_id": f"CR-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+            "logged": False,
+            "hospital_notified": False,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    
     case_id = res.get("case_id")
     hospital_id = selected_hospital.get("hospital_id")
     severity = triage_result.get("severity", "critical")
@@ -256,10 +265,12 @@ def get_case(case_id: str) -> Optional[Dict[str, Any]]:
     """
     Retrieves a case record via MCP.
     """
-    return mcp_client.call_tool("get_case", {"case_id": case_id})
+    res = mcp_client.call_tool("get_case", {"case_id": case_id})
+    return res
 
 def get_recent_cases(limit: int = 20) -> List[Dict[str, Any]]:
     """
     Retrieves recent cases via MCP.
     """
-    return mcp_client.call_tool("get_recent_cases", {"limit": limit})
+    res = mcp_client.call_tool("get_recent_cases", {"limit": limit})
+    return res if res is not None else []

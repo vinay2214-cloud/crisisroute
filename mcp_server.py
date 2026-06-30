@@ -24,12 +24,27 @@ if ELASTIC_ENDPOINT:
             ELASTIC_ENDPOINT,
             api_key=ELASTIC_API_KEY
         )
+        # Verify connection viability
+        if not es.ping():
+            print("Warning: Elasticsearch cloud ping failed. Elasticsearch disabled, running in local fallback mode.")
+            es = None
     except Exception as e:
-        print(f"Error initializing Elasticsearch client in MCP Server: {e}")
+        print(f"Error initializing Elasticsearch client in MCP Server: {e}. Running in local fallback mode.")
         es = None
 else:
     print("Warning: ELASTIC_ENDPOINT not configured in MCP Server. Elasticsearch disabled.")
     es = None
+
+# Fallback Local In-Memory Datastores
+LOCAL_HOSPITALS = []
+LOCAL_CASES = []
+
+try:
+    from data.hospitals_ap import generate_hospitals
+    LOCAL_HOSPITALS = [doc["_source"] for doc in generate_hospitals()]
+    print(f"Loaded {len(LOCAL_HOSPITALS)} local fallback hospitals successfully.")
+except Exception as e:
+    print(f"Failed to load local fallback hospitals: {e}")
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
@@ -171,7 +186,68 @@ def search_hospitals(
     Supports radius expansion, specialty removal, and capacity requirement removal fallbacks.
     """
     if not es:
-        return []
+        # Fall back to local search query processing over local fallback hospitals
+        def perform_local_filter(spec, rad, req_capacity=True):
+            filtered = []
+            for h in LOCAL_HOSPITALS:
+                h_lat = h["location"]["lat"]
+                h_lon = h["location"]["lon"]
+                dist = haversine(patient_lat, patient_lng, h_lat, h_lon)
+                
+                if dist > rad:
+                    continue
+                if spec and spec not in h.get("specialties", []):
+                    continue
+                if req_capacity and h.get("beds_available", 0) <= 0:
+                    continue
+                
+                filtered.append((h, dist))
+            
+            # Sort by beds_available descending, distance ascending
+            filtered.sort(key=lambda x: (-x[0].get("beds_available", 0), x[1]))
+            return filtered
+
+        hits = perform_local_filter(specialty, radius_km, req_capacity=True)
+        radius_used = radius_km
+
+        if len(hits) < 3 and radius_km < 200:
+            hits = perform_local_filter(specialty, radius_km * 2, req_capacity=True)
+            radius_used = radius_km * 2
+
+        if len(hits) < 3:
+            hits = perform_local_filter(None, radius_used, req_capacity=True)
+
+        if len(hits) < 3:
+            hits = perform_local_filter(None, radius_used, req_capacity=False)
+
+        results = []
+        for h, dist in hits:
+            results.append({
+                "hospital_id": h.get("hospital_id"),
+                "name": h.get("name"),
+                "district": h.get("district"),
+                "state": h.get("state"),
+                "lat": h["location"]["lat"],
+                "lng": h["location"]["lon"],
+                "specialties": h.get("specialties", []),
+                "beds_available": h.get("beds_available", 0),
+                "icu_available": h.get("icu_available", 0),
+                "ventilators_available": h.get("ventilators_available", 0),
+                "capacity_status": h.get("capacity_status"),
+                "contact_phone": h.get("contact_phone"),
+                "emergency_phone": h.get("emergency_phone", "108"),
+                "is_government": h.get("is_government", False),
+                "accreditation": h.get("accreditation"),
+                "rating": h.get("rating", 0.0),
+                "hospital_tier": h.get("hospital_tier"),
+                "has_cardiology": h.get("has_cardiology", False),
+                "has_trauma": h.get("has_trauma", False),
+                "has_neurology": h.get("has_neurology", False),
+                "has_oncology": h.get("has_oncology", False),
+                "distance_km": round(dist, 2),
+                "radius_used": radius_used
+            })
+        return results[:15]
 
     def perform_query(spec, rad, req_capacity=True):
         filters = [
@@ -262,8 +338,41 @@ def get_capacity(hospital_ids: List[str]) -> Dict[str, Any]:
     """
     Check current capacity statistics for a list of hospitals in a single request.
     """
-    if not es or not hospital_ids:
+    if not hospital_ids:
         return {}
+    if not es:
+        capacity_map = {}
+        for hid in hospital_ids:
+            found_h = None
+            for h in LOCAL_HOSPITALS:
+                if h.get("hospital_id") == hid:
+                    found_h = h
+                    break
+            if found_h:
+                beds_avail = found_h.get("beds_available", 0)
+                beds_total = found_h.get("beds_total", 0)
+                capacity_map[hid] = {
+                    "beds_available": beds_avail,
+                    "icu_available": found_h.get("icu_available", 0),
+                    "ventilators_available": found_h.get("ventilators_available", 0),
+                    "capacity_status": found_h.get("capacity_status"),
+                    "beds_total": beds_total,
+                    "occupancy_rate": round((beds_total - beds_avail) / beds_total if beds_total > 0 else 1.0, 3),
+                    "version": found_h.get("version", 1),
+                    "found": True
+                }
+            else:
+                capacity_map[hid] = {
+                    "beds_available": 0,
+                    "icu_available": 0,
+                    "ventilators_available": 0,
+                    "capacity_status": "full",
+                    "beds_total": 0,
+                    "occupancy_rate": 1.0,
+                    "version": 0,
+                    "found": False
+                }
+        return capacity_map
 
     try:
         response = es.mget(index="hospitals", ids=hospital_ids)
@@ -340,6 +449,18 @@ def reserve_bed(hospital_id: str) -> Dict[str, Any]:
     Retries up to 3 times on conflict.
     """
     if not es:
+        for h in LOCAL_HOSPITALS:
+            if h.get("hospital_id") == hospital_id:
+                if h.get("beds_available", 0) > 0:
+                    h["beds_available"] -= 1
+                    h["version"] = h.get("version", 1) + 1
+                    if h["beds_available"] > 10:
+                        h["capacity_status"] = "available"
+                    elif h["beds_available"] > 0:
+                        h["capacity_status"] = "limited"
+                    else:
+                        h["capacity_status"] = "full"
+                    return {"success": True, "new_count": h["beds_available"], "conflict": False}
         return {"success": False, "new_count": 0, "conflict": False}
 
     for attempt in range(3):
@@ -469,6 +590,9 @@ Contact patient family: {selected_hospital.get('contact_phone', '108')}
             logged = True
         except Exception as e:
             print(f"Error logging case to Elasticsearch in tool: {e}")
+    else:
+        LOCAL_CASES.append(doc)
+        logged = True
             
     return {
         "case_id": case_id,
@@ -484,6 +608,9 @@ def get_case(case_id: str) -> Optional[Dict[str, Any]]:
     Retrieves a case record from Elasticsearch by its case_id using a term query.
     """
     if not es:
+        for c in LOCAL_CASES:
+            if c.get("case_id") == case_id:
+                return c
         return None
         
     try:
@@ -503,7 +630,8 @@ def get_recent_cases(limit: int = 20) -> List[Dict[str, Any]]:
     Retrieves recent cases from Elasticsearch sorted by timestamp descending.
     """
     if not es:
-        return []
+        sorted_cases = sorted(LOCAL_CASES, key=lambda x: x.get("timestamp", ""), reverse=True)
+        return sorted_cases[:limit]
         
     try:
         sort_config = [{"timestamp": {"order": "desc"}}]
@@ -520,10 +648,31 @@ def get_dashboard_stats() -> Dict[str, Any]:
     Returns aggregated stats across all AP hospitals using Elasticsearch aggregations.
     """
     if not es:
+        t_beds = sum(h.get("beds_total", 0) for h in LOCAL_HOSPITALS)
+        a_beds = sum(h.get("beds_available", 0) for h in LOCAL_HOSPITALS)
+        a_icu = sum(h.get("icu_available", 0) for h in LOCAL_HOSPITALS)
+        
+        status_bd = {"available": 0, "limited": 0, "full": 0}
+        for h in LOCAL_HOSPITALS:
+            k = h.get("capacity_status", "full").lower()
+            if k in status_bd:
+                status_bd[k] += 1
+                
+        districts = {}
+        for h in LOCAL_HOSPITALS:
+            d = h.get("district", "Unknown")
+            districts[d] = districts.get(d, 0) + h.get("beds_available", 0)
+            
+        by_district = [{"district": k, "available_beds": v} for k, v in districts.items()]
+        
         return {
-            "total_hospitals": 0, "total_beds": 0, "available_beds": 0, "available_icu": 0,
-            "occupancy_rate": 1.0, "status_breakdown": {"available": 0, "limited": 0, "full": 0},
-            "by_district": []
+            "total_hospitals": len(LOCAL_HOSPITALS),
+            "total_beds": t_beds,
+            "available_beds": a_beds,
+            "available_icu": a_icu,
+            "occupancy_rate": round((t_beds - a_beds) / t_beds if t_beds > 0 else 1.0, 3),
+            "status_breakdown": status_bd,
+            "by_district": by_district
         }
 
     aggs = {

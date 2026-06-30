@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import asyncio
 import threading
 import logging
@@ -95,28 +96,58 @@ class MCPClientManager:
             if not self.connected or not self.session:
                 raise RuntimeError("Elasticsearch MCP Server is offline or cannot be spawned.")
 
+        start_time = time.time()
         future = asyncio.run_coroutine_threadsafe(
             self.session.call_tool(name, arguments=arguments),
             self.loop
         )
         try:
             result = future.result(timeout=15.0)
-            if not result or not result.content:
-                return None
+            execution_time_ms = int((time.time() - start_time) * 1000)
             
-            # Parse the content returned by the tool
-            first_content = result.content[0]
-            if hasattr(first_content, 'text'):
-                try:
-                    # Attempt to parse as JSON if it's a serialized string
-                    return json.loads(first_content.text)
-                except json.JSONDecodeError:
-                    return first_content.text
-            elif hasattr(first_content, 'data'):
-                return first_content.data
-            return None
+            # Determine result size and parse content
+            parsed_result = None
+            result_size = 0
+            if result and result.content:
+                first_content = result.content[0]
+                if hasattr(first_content, 'text'):
+                    raw_text = first_content.text
+                    result_size = len(raw_text)
+                    try:
+                        parsed_result = json.loads(raw_text)
+                    except json.JSONDecodeError:
+                        parsed_result = raw_text
+                elif hasattr(first_content, 'data'):
+                    parsed_result = first_content.data
+                    result_size = len(str(parsed_result))
+            
+            # Log success
+            log_payload = {
+                "event": "mcp_tool_invocation",
+                "tool_name": name,
+                "parameters": arguments,
+                "duration_ms": execution_time_ms,
+                "status": "success",
+                "result_size_bytes": result_size
+            }
+            logger.info(f"MCP Tool Success: {json.dumps(log_payload)}")
+            
+            return parsed_result
+            
         except Exception as e:
-            logger.error(f"Error calling MCP tool '{name}': {e}")
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            # Log failure
+            log_payload = {
+                "event": "mcp_tool_invocation",
+                "tool_name": name,
+                "parameters": arguments,
+                "duration_ms": execution_time_ms,
+                "status": "failure",
+                "exception_type": type(e).__name__,
+                "exception_message": str(e)
+            }
+            logger.error(f"MCP Tool Failure: {json.dumps(log_payload)}")
+            
             # If the session got closed, mark as disconnected
             if "closed" in str(e).lower() or "session" in str(e).lower():
                 self.connected = False
